@@ -1,0 +1,81 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+.pnpm-debug.log*
+node_modules
+# Logs
+logs
+*.log
+logs/*.log
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Build output
+/dist/
+/build/
+/out/
+/coverage/
+/*.tgz
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Dependency directories
+bower_components/
+jspm_packages/
+
+# Electron specific
+*.asar
+electron-packager-intermediate/
+electron-packager-output/
+release/
+*.log
+
+# React specific
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Cache
+.cache/
+webpack-cache/
+eslintcache
+.npm/
+.parcel-cache/
+.next/
+*.tmp
+
+# Testing
+coverage/
+*.coverage
+*.lcov
+jest-html-reporters-*.html
+
+# Static analysis
+.nyc_output/
+
+# Git-specific
+.git/
+*.orig
+
+# Temporary files
+*.pid
+*.seed
+*.pid.lock
+
+# Mac-specific
+.AppleDouble
+.LSOverride
+
+# Windows-specific
+Desktop.ini
