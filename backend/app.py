@@ -3,6 +3,7 @@ from flask_cors import CORS
 import os
 import json
 import subprocess
+import random
 from dotenv import load_dotenv
 import google.generativeai as ggi
 import screen_brightness_control as sbc
@@ -11,6 +12,7 @@ import re
 import sqlite3
 from datetime import datetime
 import shutil
+import speech_recognition as sr
 
 app = Flask(__name__)
 CORS(app)
@@ -18,46 +20,35 @@ CORS(app)
 # Load environment variables
 load_dotenv()
 ggi.configure(api_key=os.getenv("gemini_gpt_key"))
-chat = ggi.GenerativeModel("gemini-pro").start_chat()
+chat = ggi.GenerativeModel("gemini-2.0-flash").start_chat()
 
-# System prompt for command interpretation
+# Enhanced system prompt
 SYSTEM_PROMPT = """
-You are a virtual assistant capable of controlling system settings and managing files and can also make causal conversations. When users make requests, return a JSON object with specific command structures:
+You are an advanced AI assistant with multiple capabilities:
+1. Execute system commands
+2. Manage files and system settings
+3. Engage in natural conversations
+4. Provide technical assistance
 
-1. For volume control: 
-   {"command": "volume", "params": ["increase" or "decrease"]}
+Your goal is to understand user intent and respond appropriately. 
+When processing commands, return a JSON object with these possible structures:
 
-2. For brightness: 
-   {"command": "brightness", "params": ["increase" or "decrease"]}
+- Volume: {"command": "volume", "params": ["increase"/"decrease"]}
+- Brightness: {"command": "brightness", "params": ["increase"/"decrease"]}
+- Version Check: {"command": "version", "params": ["framework_name"]}
+- App Check: {"command": "app", "params": ["app_name"]}
+- File Operations: {"command": "file", "params": ["action", "filepath"]}
+- Folder Operations: {"command": "folder", "params": ["action", "path"]}
+- Code Operations: {"command": "code", "params": ["action", "filepath"]}
+- Open VSCode: {"command": "openvscode", "params": []}
+- Open Application: {"command": "openapp", "params": ["app_name"]}
+- Create Folder at Path: {"command": "createfolder", "params": ["folder_name", "path"]}
+- Create File at Path: {"command": "createfile", "params": ["file_name", "path"]}
 
-3. For version checks: 
-   {"command": "version", "params": ["python" or other framework name]}
-
-4. For application checks: 
-   {"command": "app", "params": ["application_name"]}
-
-5. For file operations: 
-   {"command": "file", "params": ["create/delete/read", "filepath"]}
-
-6. For folder operations: 
-   {"command": "folder", "params": ["list", "folder_path"]}
-
-7. For code operations: 
-   {"command": "code", "params": ["validate", "filepath"]}
-
-8. For VS Code: 
-   {"command": "vscode", "params": ["filepath"]}
-
-9. For path creation: 
-   {"command": "create_path", "params": ["filepath"]}
-
-10. For chat history: 
-    {"command": "history", "params": []}
-
-11. For backup operations: 
-    {"command": "backup", "params": ["type", "source_path", "destination_path"]}
-
-Always return a valid JSON object with these exact command structures.
+Conversation Guidelines:
+- Be helpful and context-aware
+- Provide clear and concise responses
+- Adapt to user's communication style
 """
 
 # Initialize database
@@ -74,14 +65,35 @@ def init_db():
 
 init_db()
 
-# Command handler functions
+# Existing command handler functions remain the same
+def get_current_volume():
+    """Fetches the current system volume (0-100%)."""
+    try:
+        output = subprocess.check_output(
+            'powershell -c "$vol = (New-Object -ComObject WScript.Shell).SendKeys([char]174); '
+            '$volume = (New-Object -ComObject SAPI.SpVoice).Volume; $volume"', 
+            shell=True
+        ).decode().strip()
+        return float(output)
+    except Exception:
+        return None
+
+def set_volume(volume):
+    """Sets the system volume to a specified percentage (0-100%)."""
+    os.system(f'powershell -c "(New-Object -ComObject WScript.Shell).SendKeys([char]174); '
+              '(New-Object -ComObject SAPI.SpVoice).Volume = {volume}"')
+
 def handle_volume(action):
     try:
-        if action == 'increase':
-            os.system("amixer -D pulse sset Master 5%+")
-        else:
-            os.system("amixer -D pulse sset Master 5%-")
-        return f"Volume {action}d by 5%"
+        current_volume = get_current_volume()
+        if current_volume is None:
+            return "Error getting current volume."
+
+        change = 10  # Increase/decrease by 10%
+        new_volume = max(0, min(100, current_volume + change if action == 'increase' else current_volume - change))
+
+        set_volume(new_volume)
+        return f"Volume set to {new_volume}%"
     except Exception as e:
         return f"Error adjusting volume: {str(e)}"
 
@@ -155,11 +167,9 @@ def handle_file_operation(action, filepath):
 
 def create_folder_in_vscode(folder_name, folder_path=None):
     try:
-        # Use the current working directory if no folder_path is provided
         if not folder_path:
             folder_path = os.getcwd()
 
-        # Handle spaces in the path by enclosing in quotes
         full_path = os.path.join(folder_path, folder_name)
         
         if not os.path.exists(full_path):
@@ -168,7 +178,7 @@ def create_folder_in_vscode(folder_name, folder_path=None):
         else:
             return f"Folder '{folder_name}' already exists at '{folder_path}'."
     except Exception as e:
-        return f"An error occurred while creating the folder '{folder_name}' in '{folder_path}': {str(e)}"
+        return f"Error creating folder: {str(e)}"
 
 def handle_code_operation(action, filepath):
     try:
@@ -179,70 +189,108 @@ def handle_code_operation(action, filepath):
     except Exception as e:
         return f"Code operation error: {str(e)}"
 
-def handle_vscode(path):
+# New function to open VSCode
+def open_vscode():
+    """Opens Visual Studio Code using direct methods for Windows."""
     try:
-        # Handle spaces in the path by enclosing it in quotes
-        if os.path.exists(path):
-            os.system(f'code "{path}"')  # Open VSCode at the specified path.
-            return f"VSCode opened at path '{path}' successfully."
-        else:
-            return f"The specified path '{path}' does not exist."
-    except Exception as e:
-        return f"An error occurred while opening VSCode at path '{path}': {str(e)}"
-
-def handle_create_path(filepath):
-    try:
-        filepath = os.path.normpath(filepath)
-        
-        directory = os.path.dirname(filepath) if os.path.dirname(filepath) else '.'
-        if not os.access(directory, os.W_OK):
-            return f"Permission denied: Cannot write to {directory}. Try running the application as administrator."
-            
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        
+        # Method 1: Using PowerShell Start-Process
         try:
-            with open(filepath, 'w') as f:
-                f.write('')
-            return f"Created file at: {filepath}"
-        except PermissionError:
-            return f"Permission denied: Cannot create file at {filepath}. Try running as administrator."
-    except Exception as e:
-        return f"Error creating file: {str(e)}\nTry running the application as administrator."
+            subprocess.run(
+                ["powershell", "-Command", "Start-Process code"],
+                shell=True,
+                check=True,
+                capture_output=True
+            )
+            return "VS Code opened successfully using PowerShell."
+        except subprocess.CalledProcessError:
+            pass
 
-def handle_history():
-    try:
-        conn = sqlite3.connect('chat_history.db')
-        c = conn.cursor()
-        c.execute('SELECT sender, message, timestamp FROM messages ORDER BY timestamp DESC LIMIT 50')
-        history = c.fetchall()
-        conn.close()
-        return {"message": "Here's your chat history:", 
-                "history": [{"sender": h[0], "message": h[1], "timestamp": h[2]} for h in history]}
-    except Exception as e:
-        return f"Error fetching history: {str(e)}"
+        # Method 2: Try specific common installation paths
+        common_paths = [
+            r"C:\Program Files\Microsoft VS Code\Code.exe",
+            r"C:\Program Files (x86)\Microsoft VS Code\Code.exe",
+            r"C:\Users\arjun\AppData\Local\Programs\Microsoft VS Code\Code.exe",
+            r"C:\Users\Administrator\AppData\Local\Programs\Microsoft VS Code\Code.exe"
+        ]
 
-def handle_search(term):
-    try:
-        conn = sqlite3.connect('chat_history.db')
-        c = conn.cursor()
-        c.execute('SELECT sender, message, timestamp FROM messages WHERE message LIKE ? ORDER BY timestamp DESC',
-                 (f'%{term}%',))
-        results = c.fetchall()
-        conn.close()
-        return {"message": f"Search results for '{term}':", 
-                "history": [{"sender": r[0], "message": r[1], "timestamp": r[2]} for r in results]}
-    except Exception as e:
-        return f"Error searching history: {str(e)}"
+        current_username = os.getenv("USERNAME") or "User"
+        user_path = fr"C:\Users\{current_username}\AppData\Local\Programs\Microsoft VS Code\Code.exe"
+        if user_path not in common_paths:
+            common_paths.append(user_path)
 
-def handle_backup(type_, source, dest):
-    try:
-        if os.path.isfile(source):
-            shutil.copy2(source, dest)
-        else:
-            shutil.copytree(source, dest, dirs_exist_ok=True)
-        return f"Backed up {type_} from {source} to {dest}"
+        for path in common_paths:
+            if os.path.exists(path):
+                subprocess.Popen([path])
+                return f"VS Code opened successfully from {path}"
+
+        # Method 3: Try via Start Menu shortcut location
+        start_menu_paths = [
+            fr"C:\Users\{current_username}\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Visual Studio Code.lnk",
+            r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Visual Studio Code.lnk"
+        ]
+        
+        for path in start_menu_paths:
+            if os.path.exists(path):
+                subprocess.run(["cmd", "/c", "start", "", path], shell=True)
+                return f"VS Code opened successfully via shortcut at {path}"
+
+        # Method 4: Last resort - try direct command
+        os.system("start code")
+        return "Attempted to open VS Code using generic start command."
+            
     except Exception as e:
-        return f"Backup error: {str(e)}"
+        return f"Error opening Visual Studio Code: {str(e)}. Please check if it's installed."
+# New function to open any desktop application
+def open_application(app_name):
+    """Opens any desktop application by name."""
+    system = platform.system()
+    try:
+        if system == 'Windows':
+            subprocess.Popen([app_name])
+        elif system == 'Darwin':  # macOS
+            subprocess.Popen(['open', '-a', app_name])
+        elif system == 'Linux':
+            subprocess.Popen([app_name])
+        return f"{app_name} opened successfully."
+    except Exception as e:
+        return f"Error opening {app_name}: {e}"
+
+# New function to create folder at specific path
+def create_folder_at_path(folder_name, path):
+    """Creates a folder at the specified path."""
+    try:
+        full_path = os.path.join(path, folder_name) if path else folder_name
+        os.makedirs(full_path, exist_ok=True)
+        return f"Folder '{folder_name}' created successfully at '{path}'."
+    except Exception as e:
+        return f"Error creating folder: {str(e)}"
+
+# New function to create file at specific path
+def create_file_at_path(file_name, path):
+    """Creates an empty file at the specified path."""
+    try:
+        full_path = os.path.join(path, file_name) if path else file_name
+        directory = os.path.dirname(full_path)
+        if directory and not os.path.exists(directory):
+            os.makedirs(directory, exist_ok=True)
+        with open(full_path, 'w') as f:
+            pass  # Create empty file
+        return f"File '{file_name}' created successfully at '{path}'."
+    except Exception as e:
+        return f"Error creating file: {str(e)}"
+
+def handle_vscode():
+    try:
+        vscode_shortcut = r"C:\Users\arjun\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Visual Studio Code.lnk"
+
+        if not os.path.exists(vscode_shortcut):
+            return f"VS Code shortcut '{vscode_shortcut}' does not exist."
+
+        subprocess.run(["cmd", "/c", "start", "", vscode_shortcut], shell=True)
+        return "VS Code opened successfully."
+    except Exception as e:
+        return f"Error opening VS Code: {str(e)}"
+
 
 def save_message(sender, message):
     conn = sqlite3.connect('chat_history.db')
@@ -252,33 +300,61 @@ def save_message(sender, message):
     conn.commit()
     conn.close()
 
-# Command router
+# Enhanced conversation handling
+def handle_conversation(message):
+    try:
+        greeting_keywords = ['hi', 'hello', 'hey', 'greetings', 'sup', 'howdy', 'hola']
+        code_keywords = ['code', 'program', 'programming', 'python', 'development', 'developer', 'coding']
+        help_keywords = ['help', 'assist', 'support', 'guidance']
+        
+        normalized_message = message.lower()
+        
+        if any(keyword in normalized_message for keyword in greeting_keywords):
+            responses = [
+                "Hello! I'm your AI assistant. How can I help you today?",
+                "Hi there! What can I do for you?",
+                "Greetings! I'm ready to assist you."
+            ]
+            return random.choice(responses)
+        
+        if any(keyword in normalized_message for keyword in help_keywords):
+            return "I can help with system commands, file management, code queries, and more. What do you need?"
+        
+        if any(keyword in normalized_message for keyword in code_keywords):
+            response = chat.send_message(f"Provide a professional response about: {message}")
+            return response.text
+        
+        generic_response = chat.send_message(f"Respond helpfully to: {message}")
+        return generic_response.text
+    
+    except Exception as e:
+        return f"Error processing message: {str(e)}"
+
+# Enhanced command routing
 def route_command(command_data):
     try:
-        command = command_data.get('command')
+        command = command_data.get('command', '').lower()
         params = command_data.get('params', [])
         
-        if not command:
-            return "No command specified"
-        
+        # Updated command handlers dictionary with new functions
         command_handlers = {
             'volume': lambda: handle_volume(params[0]),
             'brightness': lambda: handle_brightness(params[0]),
             'version': lambda: handle_version_check(params[0]),
             'app': lambda: handle_app_check(params[0]),
             'file': lambda: handle_file_operation(params[0], params[1]),
-            'folder': lambda: create_folder_in_vscode(params[0], params[1]),
+            'folder': lambda: create_folder_in_vscode(params[0], params[1] if len(params) > 1 else None),
             'code': lambda: handle_code_operation(params[0], params[1]),
-            'vscode': lambda: handle_vscode(params[0]),
-            'create_path': lambda: handle_create_path(params[0]),
-            'history': handle_history,
-            'search': lambda: handle_search(params[0]),
-            'backup': lambda: handle_backup(params[0], params[1], params[2])
+            # 'vscode': lambda: handle_vscode(),
+            'openvscode': lambda: open_vscode(),
+            'openapp': lambda: open_application(params[0]),
+            'createfolder': lambda: create_folder_at_path(params[0], params[1] if len(params) > 1 else None),
+            'createfile': lambda: create_file_at_path(params[0], params[1] if len(params) > 1 else None)
         }
         
         handler = command_handlers.get(command)
         if not handler:
-            return f"Command not recognized: {command}"
+            return f"Command not recognized: {command}. Try a different command or ask for help."
             
         if not isinstance(params, list):
             return "Invalid params format: must be a list"
@@ -287,6 +363,33 @@ def route_command(command_data):
         
     except Exception as e:
         return f"Error processing command: {str(e)}"
+
+# Speech-to-text functionality
+recognizer = sr.Recognizer()
+
+@app.route('/transcribe', methods=['POST'])
+def transcribe_audio():
+    """Listen to speech and transcribe it in real-time"""
+    with  sr.Microphone()  as source:
+        print("Listening for live transcription...")
+        recognizer.adjust_for_ambient_noise(source)
+        try:
+            audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
+        except sr.WaitTimeoutError:
+            print("No speech detected")
+            return jsonify({"error": "No speech detected. Please try again."}), 400
+
+    try:
+        # Use Google's speech recognition
+        recognized_text = recognizer.recognize_google(audio)
+        print(f"Recognized: {recognized_text}")
+        return jsonify({"transcription": recognized_text})
+    except sr.UnknownValueError:
+        print("Speech not understood")
+        return jsonify({"error": "Speech not understood. Please try again."}), 400
+    except sr.RequestError as e:
+        print(f"API error: {e}")
+        return jsonify({"error": f"Error: {e}"}), 500
 
 @app.route('/chat', methods=['POST'])
 def process_message():
@@ -297,22 +400,26 @@ def process_message():
             
         save_message('User', message)
         
-        # Get command interpretation from GPT
-        response = chat.send_message(
-            SYSTEM_PROMPT + f"\nUser request: {message}"
-        )
-        
         try:
-            command_data = json.loads(response.text)
-            if command_data.get('command'):
-                result = route_command(command_data)
-                save_message('Bot', str(result))
-                return jsonify({"reply": result})
-        except json.JSONDecodeError:
-            # If command interpretation fails, treat as regular chat
-            chat_response = chat.send_message(message)
-            save_message('Bot', chat_response.text)
-            return jsonify({"reply": chat_response.text})
+            response = chat.send_message(
+                SYSTEM_PROMPT + f"\nUser request: {message}"
+            )
+            
+            try:
+                command_data = json.loads(response.text)
+                
+                if command_data.get('command'):
+                    result = route_command(command_data)
+                    save_message('Bot', str(result))
+                    return jsonify({"reply": result})
+            except json.JSONDecodeError:
+                pass
+        except Exception as e:
+            pass
+        
+        conversation_response = handle_conversation(message)
+        save_message('Bot', conversation_response)
+        return jsonify({"reply": conversation_response})
             
     except Exception as e:
         return jsonify({"error": f"Server error: {str(e)}"}), 500
@@ -326,6 +433,9 @@ def get_chat_history():
     history = c.fetchall()
     conn.close()
     return jsonify([{"sender": h[0], "message": h[1], "timestamp": h[2]} for h in history])
+
+# Add missing import for platform module
+import platform
 
 if __name__ == "__main__":
     app.run(debug=True)

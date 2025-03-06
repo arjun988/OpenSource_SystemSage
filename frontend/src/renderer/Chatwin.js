@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FileText, Folder, Clock, Save, Terminal, MessageCircle } from 'lucide-react';
+import { FileText, Folder, Clock, Save, Terminal, MessageCircle, Mic, MicOff } from 'lucide-react';
 
 const ChatWindow = () => {
   const [messages, setMessages] = useState([]);
@@ -8,7 +8,11 @@ const ChatWindow = () => {
   const [chatHistory, setChatHistory] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [mode, setMode] = useState('chat'); // 'chat' or 'command'
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingText, setRecordingText] = useState('');
   const messagesEndRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -26,6 +30,91 @@ const ChatWindow = () => {
       setChatHistory(history);
     } catch (error) {
       console.error('Error loading chat history:', error);
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorderRef.current = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorderRef.current.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
+        await transcribeAudio(audioBlob);
+        
+        // Stop all tracks to release the microphone
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      // Setup for continuous transcription
+      const transcriptionInterval = setInterval(async () => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+          mediaRecorderRef.current.requestData();
+          const currentAudioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
+          if (currentAudioBlob.size > 0) {
+            await transcribeAudio(currentAudioBlob, true);
+          }
+        } else {
+          clearInterval(transcriptionInterval);
+        }
+      }, 3000);  // Try to transcribe every 3 seconds
+
+      mediaRecorderRef.current.start();
+      setIsRecording(true);
+      setRecordingText('Listening...');
+    } catch (error) {
+      console.error('Error starting recording:', error);
+      setRecordingText('Error: ' + error.message);
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      
+      // Transfer the recording text to the input field
+      if (recordingText && recordingText !== 'Listening...') {
+        setInput(recordingText);
+      }
+      setRecordingText('');
+    }
+  };
+
+  const transcribeAudio = async (audioBlob, isInterim = false) => {
+    try {
+      const formData = new FormData();
+      formData.append('audio', audioBlob);
+
+      const response = await fetch('http://localhost:5000/transcribe', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await response.json();
+      
+      if (data.transcription) {
+        if (isInterim) {
+          // For interim results, just update the recording text
+          setRecordingText(data.transcription);
+        } else {
+          // For final results, set the input field
+          setInput(data.transcription);
+          setRecordingText('');
+        }
+      } else if (data.error) {
+        setRecordingText(isInterim ? 'Listening...' : 'Error: ' + data.error);
+      }
+    } catch (error) {
+      console.error('Error transcribing audio:', error);
+      setRecordingText('Error transcribing audio');
     }
   };
 
@@ -135,6 +224,7 @@ const ChatWindow = () => {
 
   const getPlaceholderText = () => {
     if (isLoading) return "Processing...";
+    if (isRecording) return "Listening...";
     return mode === 'command' 
       ? "Enter a command (e.g., 'increase volume', 'show files in downloads')" 
       : "Ask me anything...";
@@ -217,25 +307,43 @@ const ChatWindow = () => {
         </div>
         
         <div className="p-4 border-t">
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-              placeholder={getPlaceholderText()}
-              className="flex-1 p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={isLoading}
-            />
-            <button
-              onClick={handleSend}
-              className={`px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors ${
-                isLoading ? 'opacity-50 cursor-not-allowed' : ''
-              }`}
-              disabled={isLoading}
-            >
-              {isLoading ? 'Processing...' : 'Send'}
-            </button>
+          <div className="flex flex-col gap-2">
+            {isRecording && (
+              <div className="bg-red-50 text-red-600 p-2 rounded-lg text-sm">
+                {recordingText || "Listening..."}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleSend()}
+                placeholder={getPlaceholderText()}
+                className="flex-1 p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                disabled={isLoading}
+              />
+              <button
+                onClick={isRecording ? stopRecording : startRecording}
+                className={`p-2 rounded-lg transition-colors ${
+                  isRecording 
+                    ? 'bg-red-500 text-white hover:bg-red-600' 
+                    : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                }`}
+                title={isRecording ? "Stop Recording" : "Start Recording"}
+              >
+                {isRecording ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+              </button>
+              <button
+                onClick={handleSend}
+                className={`px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors ${
+                  isLoading ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
+                disabled={isLoading}
+              >
+                {isLoading ? 'Processing...' : 'Send'}
+              </button>
+            </div>
           </div>
         </div>
       </div>
