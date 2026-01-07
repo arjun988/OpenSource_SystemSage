@@ -70,37 +70,8 @@ htmlcov/
 *.pid
 *.tar
 
-# Frontend/Node.js
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.npm
-.eslintcache
-
-# Build outputs
-frontend/dist/
-frontend/build/
-*.tgz
-*.tar.gz
-
-# Jest
-frontend/coverage/
-frontend/.jest/
-
-# Playwright
-frontend/test-results/
-frontend/playwright-report/
-
-# Electron
-frontend/out/
-frontend/release/
-
 # Editor and OS-specific files
 *.swp
 *.swo
 *.DS_Store
 Thumbs.db
-.vscode/
-.idea/
-*.tmp
